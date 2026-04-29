@@ -1,0 +1,4 @@
+CREATE DATABASE ITI_Exam_System;
+GO
+USE ITI_Exam_System;
+GO
