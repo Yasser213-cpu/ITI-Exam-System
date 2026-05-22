@@ -19,14 +19,15 @@ LANGUAGE plpgsql AS $$
 BEGIN
     RETURN QUERY
     SELECT s.StudentID, s.FullName, s.Email, b.BranchName, t.TrackName
-    FROM Student s
-    JOIN Branch  b ON s.BranchID = b.BranchID
-    JOIN Track   t ON s.TrackID  = t.TrackID
-    JOIN Course  c ON t.TrackID  = c.TrackID
+    FROM Student    s
+    JOIN Branch     b ON s.BranchID     = b.BranchID
+    JOIN Track      t ON s.TrackID      = t.TrackID
+    JOIN Course     c ON t.TrackID      = c.TrackID
     JOIN Instructor i ON c.InstructorID = i.InstructorID
     WHERE i.DepartmentNo = p_departmentno;
 END;
 $$;
+
 
 -- ============================================================
 -- sp_Report_InstructorCourses
@@ -47,9 +48,9 @@ RETURNS TABLE (
 LANGUAGE plpgsql AS $$
 BEGIN
     RETURN QUERY
-    SELECT c.CourseName, t.TrackName, COUNT(s.StudentID)
-    FROM Course c
-    JOIN Track t ON c.TrackID = t.TrackID
+    SELECT c.CourseName, t.TrackName, COUNT(s.StudentID)::BIGINT AS StudentCount
+    FROM Course  c
+    JOIN Track   t ON c.TrackID = t.TrackID
     LEFT JOIN Student s ON c.TrackID = s.TrackID
     WHERE c.InstructorID = p_instructorid
     GROUP BY c.CourseName, t.TrackName;

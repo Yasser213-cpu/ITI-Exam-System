@@ -83,64 +83,136 @@ $$;
 
 
 -- ============================================================
--- sp_SubmitExamAnswers
--- Purpose  : Submit student answers for a given exam atomically
+-- sp_CorrectExam
+-- Purpose  : Grade a student exam by comparing answers to
+--            model answers and updating TotalGrade, Percentage
 -- Author   : ITI Dev Team
 -- Version  : 1.0
 -- ============================================================
-CREATE OR REPLACE PROCEDURE sp_SubmitExamAnswers(
-    p_StudentID  INT,
-    p_ExamID     INT,
-    p_EndTime    TIMESTAMP,
-    p_AnswersXML XML
+CREATE OR REPLACE PROCEDURE sp_CorrectExam(
+    p_StudentExamID INT
 )
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    v_StudentExamID INT;
-    v_StartTime     TIMESTAMP;
+    v_TotalGrade DECIMAL(6,2);
+    v_MaxPoints  DECIMAL(6,2);
+    v_Percentage DECIMAL(5,2);
 BEGIN
-    -- Check student exists
+    -- Check StudentExam exists
     IF NOT EXISTS (
-        SELECT 1 FROM Student WHERE StudentID = p_StudentID
+        SELECT 1 FROM StudentExam WHERE StudentExamID = p_StudentExamID
     ) THEN
-        RAISE EXCEPTION 'StudentID % does not exist.', p_StudentID;
+        RAISE EXCEPTION 'StudentExamID % does not exist.', p_StudentExamID;
     END IF;
 
-    -- Check exam exists
-    IF NOT EXISTS (
-        SELECT 1 FROM Exam WHERE ExamID = p_ExamID
-    ) THEN
-        RAISE EXCEPTION 'ExamID % does not exist.', p_ExamID;
-    END IF;
-
-    -- Check student has not already submitted
+    -- Check exam has not already been graded
     IF EXISTS (
         SELECT 1 FROM StudentExam
-        WHERE StudentID = p_StudentID AND ExamID = p_ExamID
+        WHERE StudentExamID = p_StudentExamID
+        AND TotalGrade IS NOT NULL
     ) THEN
-        RAISE EXCEPTION 'Student % already submitted Exam %.',
-            p_StudentID, p_ExamID;
+        RAISE EXCEPTION 'Exam already graded.';
     END IF;
 
-    -- Create StudentExam record
-    v_StartTime := NOW();
-    INSERT INTO StudentExam (StudentID, ExamID, StartTime, EndTime)
-    VALUES (p_StudentID, p_ExamID, v_StartTime, p_EndTime)
-    RETURNING StudentExamID INTO v_StudentExamID;
+    -- Calculate MaxPoints
+    SELECT COALESCE(SUM(eq.Points), 0)
+    INTO v_MaxPoints
+    FROM ExamQuestion eq
+    JOIN StudentExam  se ON se.ExamID = eq.ExamID
+    WHERE se.StudentExamID = p_StudentExamID;
 
-    -- Parse XML and insert student answers
-    INSERT INTO StudentAnswer (StudentExamID, ExamQID, ChosenOptionID)
-    SELECT
-        v_StudentExamID,
-        (xpath('//ExamQID/text()',               answer))[1]::TEXT::INT,
-        NULLIF((xpath('//ChosenOptionID/text()', answer))[1]::TEXT, '')::INT
-    FROM unnest(xpath('//Answer', p_AnswersXML)) AS answer;
+    -- Calculate TotalGrade (correct answers only)
+    SELECT COALESCE(SUM(eq.Points), 0)
+    INTO v_TotalGrade
+    FROM StudentAnswer sa
+    JOIN ExamQuestion  eq ON eq.ExamQID    = sa.ExamQID
+    JOIN ModelAnswer   ma ON ma.QuestionID = eq.QuestionID
+    WHERE sa.StudentExamID  = p_StudentExamID
+    AND   sa.ChosenOptionID = ma.CorrectOptionID;
 
-    RAISE NOTICE 'Exam submitted successfully. StudentExamID = %', v_StudentExamID;
+    -- Calculate Percentage
+    IF v_MaxPoints > 0 THEN
+        v_Percentage := ROUND((v_TotalGrade / v_MaxPoints) * 100, 2);
+    ELSE
+        v_Percentage := 0;
+    END IF;
+
+    -- Update StudentExam with results
+    UPDATE StudentExam
+    SET
+        TotalGrade = v_TotalGrade,
+        MaxPoints  = v_MaxPoints,
+        Percentage = v_Percentage
+    WHERE StudentExamID = p_StudentExamID;
+
+    RAISE NOTICE 'Exam corrected. Grade: % / % (% %%)',
+        v_TotalGrade, v_MaxPoints, v_Percentage;
 
 EXCEPTION
     WHEN OTHERS THEN
         RAISE;
+END;
+$$;
+
+
+-- ============================================================
+-- fn_Report_WeakQuestions
+-- Purpose  : Return questions where failure rate exceeds
+--            the given threshold
+-- Author   : ITI Dev Team
+-- Version  : 1.0
+-- ============================================================
+CREATE OR REPLACE FUNCTION fn_Report_WeakQuestions(
+    p_CourseID      INT,
+    p_FailThreshold FLOAT
+)
+RETURNS TABLE (
+    QuestionID   INT,
+    QuestionText TEXT,
+    FailureRate  FLOAT
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    -- Check course exists
+    IF NOT EXISTS (
+        SELECT 1 FROM Course WHERE CourseID = p_CourseID
+    ) THEN
+        RAISE EXCEPTION 'CourseID % does not exist.', p_CourseID;
+    END IF;
+
+    RETURN QUERY
+    SELECT
+        q.QuestionID,
+        q.QuestionText,
+        ROUND(
+            100.0 * SUM(
+                CASE
+                    WHEN sa.ChosenOptionID != ma.CorrectOptionID
+                      OR sa.ChosenOptionID IS NULL
+                    THEN 1
+                    ELSE 0
+                END
+            ) / COUNT(sa.AnswerID),
+        2)::FLOAT AS FailureRate
+    FROM Question      q
+    JOIN ExamQuestion  eq ON eq.QuestionID  = q.QuestionID
+    JOIN ModelAnswer   ma ON ma.QuestionID  = q.QuestionID
+    JOIN StudentAnswer sa ON sa.ExamQID     = eq.ExamQID
+    WHERE q.CourseID = p_CourseID
+    GROUP BY q.QuestionID, q.QuestionText
+    HAVING
+        ROUND(
+            100.0 * SUM(
+                CASE
+                    WHEN sa.ChosenOptionID != ma.CorrectOptionID
+                      OR sa.ChosenOptionID IS NULL
+                    THEN 1
+                    ELSE 0
+                END
+            ) / COUNT(sa.AnswerID),
+        2) > p_FailThreshold
+    ORDER BY FailureRate DESC;
 END;
 $$;
