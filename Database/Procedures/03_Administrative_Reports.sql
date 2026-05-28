@@ -1,5 +1,5 @@
 -- ============================================================
--- sp_Report_StudentsByDept
+-- fn_Report_StudentsByDept
 -- Purpose    : Returns all students in a given department
 -- Parameters : p_departmentno INT - Department number
 -- Returns    : StudentID, FullName, Email, BranchName, TrackName
@@ -7,30 +7,45 @@
 -- Date       : 2026-03-01
 -- Version    : 1.0
 -- ============================================================
-CREATE OR REPLACE FUNCTION sp_Report_StudentsByDept(p_departmentno INT)
+DROP FUNCTION IF EXISTS sp_report_studentsbydept(INT);
+
+CREATE OR REPLACE FUNCTION fn_report_studentsbydept(p_departmentno INT)
 RETURNS TABLE (
-    StudentID  INT,
-    FullName   VARCHAR(150),
-    Email      VARCHAR(150),
-    BranchName VARCHAR(100),
-    TrackName  VARCHAR(100)
+    studentid  INT,
+    fullname   VARCHAR(150),
+    email      VARCHAR(150),
+    branchname VARCHAR(100),
+    trackname  VARCHAR(100)
 )
 LANGUAGE plpgsql AS $$
 BEGIN
+    -- Check department exists
+    IF NOT EXISTS (
+        SELECT 1 FROM instructor WHERE departmentno = p_departmentno
+    ) THEN
+        RAISE EXCEPTION 'DepartmentNo % does not exist.', p_departmentno;
+    END IF;
+
     RETURN QUERY
-    SELECT s.StudentID, s.FullName, s.Email, b.BranchName, t.TrackName
-    FROM Student    s
-    JOIN Branch     b ON s.BranchID     = b.BranchID
-    JOIN Track      t ON s.TrackID      = t.TrackID
-    JOIN Course     c ON t.TrackID      = c.TrackID
-    JOIN Instructor i ON c.InstructorID = i.InstructorID
-    WHERE i.DepartmentNo = p_departmentno;
+    SELECT DISTINCT
+        s.studentid,
+        s.fullname,
+        s.email,
+        b.branchname,
+        t.trackname
+    FROM student     s
+    JOIN branch      b ON s.branchid     = b.branchid
+    JOIN track       t ON s.trackid      = t.trackid
+    JOIN course      c ON t.trackid      = c.trackid
+    JOIN instructor  i ON c.instructorid = i.instructorid
+    WHERE i.departmentno = p_departmentno
+    ORDER BY s.fullname;
 END;
 $$;
 
 
 -- ============================================================
--- sp_Report_InstructorCourses
+-- fn_Report_InstructorCourses
 -- Purpose    : Returns all courses taught by an instructor
 --              with enrolled student counts
 -- Parameters : p_instructorid INT - Instructor ID
@@ -39,20 +54,33 @@ $$;
 -- Date       : 2026-03-01
 -- Version    : 1.0
 -- ============================================================
-CREATE OR REPLACE FUNCTION sp_Report_InstructorCourses(p_instructorid INT)
+DROP FUNCTION IF EXISTS sp_report_instructorcourses(INT);
+
+CREATE OR REPLACE FUNCTION fn_report_instructorcourses(p_instructorid INT)
 RETURNS TABLE (
-    CourseName   VARCHAR(100),
-    TrackName    VARCHAR(100),
-    StudentCount BIGINT
+    coursename   VARCHAR(100),
+    trackname    VARCHAR(100),
+    studentcount BIGINT
 )
 LANGUAGE plpgsql AS $$
 BEGIN
+    -- Check instructor exists
+    IF NOT EXISTS (
+        SELECT 1 FROM instructor WHERE instructorid = p_instructorid
+    ) THEN
+        RAISE EXCEPTION 'InstructorID % does not exist.', p_instructorid;
+    END IF;
+
     RETURN QUERY
-    SELECT c.CourseName, t.TrackName, COUNT(s.StudentID)::BIGINT AS StudentCount
-    FROM Course  c
-    JOIN Track   t ON c.TrackID = t.TrackID
-    LEFT JOIN Student s ON c.TrackID = s.TrackID
-    WHERE c.InstructorID = p_instructorid
-    GROUP BY c.CourseName, t.TrackName;
+    SELECT
+        c.coursename,
+        t.trackname,
+        COUNT(DISTINCT s.studentid)::BIGINT AS studentcount
+    FROM course  c
+    JOIN track   t ON c.trackid = t.trackid
+    LEFT JOIN student s ON s.trackid = c.trackid
+    WHERE c.instructorid = p_instructorid
+    GROUP BY c.coursename, t.trackname
+    ORDER BY c.coursename;
 END;
 $$;
